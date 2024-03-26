@@ -156,6 +156,10 @@ install: build
 clean:
 	rm -rf $(BUILDDIR)/bin/
 	rm -rf $(CURDIR)/rpmbuild
+	rm -rf $(BUILDDIR)/build/
+	rm -f $(BUILDDIR)/go.mod_changed.info
+	rm -f $(BUILDDIR)/container_worker_built.info
+	rm -f $(BUILDDIR)/container_composer_built.info
 
 .PHONY: push-check
 push-check: build unit-tests srpm man
@@ -275,3 +279,77 @@ scratch: $(RPM_SPECFILE) $(RPM_TARBALL)
 		--nocheck \
 		$(RPM_SPECFILE)
 
+
+# Docker variables
+CONTAINER_EXECUTABLE ?= podman
+
+DOCKER_IMAGE_WORKER := osbuild-worker_devel
+DOCKERFILE_WORKER := distribution/Dockerfile-worker_srcinstall
+
+DOCKER_IMAGE_COMPOSER := osbuild-composer_devel
+DOCKERFILE_COMPOSER := distribution/Dockerfile-ubi
+
+GOPROXY ?= https://proxy.golang.org,direct
+
+# names of folder that have to be git-cloned additionally to be able
+# to build all code
+SRC_DEPS_NAMES := images pulp-client
+SRC_DEPS_ORIGIN := $(addprefix ../,$(SRC_DEPS_NAMES))
+
+$(SRC_DEPS_ORIGIN):
+	@for DIR in $@; do if ! [ -d $$DIR ]; then echo "Please checkout $$DIR so it is available at $$(pwd)/$$DIR"; exit 1; fi; done
+	touch $@
+
+#SRC_DEPS_OUTSIDE := vendor/github.com/osbuild/images vendor/github.com/osbuild/pulp-client
+#SRC_DEPS_INSIDE := vendor/github.com/osbuild/osbuild-composer/pkg/splunk_logger
+#SRC_DEPS := $(SRC_DEPS_OUTSIDE) $(SRC_DEPS_INSIDE)
+
+#$(SRC_DEPS_OUTSIDE): $(SRC_DEPS_ORIGIN) $(shell find ../images ../pulp-client -name *.go)
+#	mkdir -p vendor/github.com/osbuild
+#	cp -r $(SRC_DEPS_ORIGIN) vendor/github.com/osbuild
+
+#$(SRC_DEPS_INSIDE): $(shell find pkg -name *.go)
+#	mkdir -p vendor/github.com/osbuild/osbuild-composer/pkg
+#	cp -r pkg/splunk_logger vendor/github.com/osbuild/osbuild-composer/pkg/
+
+
+SRC_DEPS := $(shell find ../images ../pulp-client -name *.go) $(shell find pkg -name *.go)
+
+go.mod_changed.info: go.mod $(SRC_DEPS_ORIGIN)
+	go mod edit -replace github.com/osbuild/images=../images
+	go mod edit -replace github.com/osbuild/pulp-client=../pulp-client
+	go mod edit -replace github.com/osbuild/osbuild-composer/pkg/splunk_logger=./pkg/splunk_logger
+
+	env GOPROXY=$(GOPROXY) go mod tidy
+	env GOPROXY=$(GOPROXY) go mod vendor
+
+	# workaround when golang version of ubi9 is still 1.20 (and not 1.21 or above)
+	# "tidy" from a newer version on the host would lead to
+	# "unknown directive: toolchain"
+	# so we just remove the keyword for now
+	gawk -i inplace '!/toolchain.*/' go.mod
+
+	touch $@
+
+container_worker_built.info: go.mod_changed.info $(SRC_DEPS) $(DOCKERFILE_WORKER)
+	$(CONTAINER_EXECUTABLE) build --build-arg USE_BTRFS=yes -t $(DOCKER_IMAGE_WORKER) -f $(DOCKERFILE_WORKER) .
+	echo "Worker last built on" > $@
+	date >> $@
+
+container_composer_built.info: go.mod_changed.info $(SRC_DEPS) $(DOCKERFILE_COMPOSER)
+	$(CONTAINER_EXECUTABLE) build --build-arg USE_BTRFS=yes -t $(DOCKER_IMAGE_COMPOSER) -f $(DOCKERFILE_COMPOSER) .
+	echo "Composer last built on" > $@
+	date >> $@
+
+#go mod edit -modfile=go.local.mod -replace github.com/osbuild/images=../images
+
+# go mod edit -modfile=go.local.mod -replace github.com/osbuild/images=../images
+# go mod vendor -modfile=go.local.mod
+
+# build a container with a worker from full source
+.PHONY: container_worker
+container_worker: container_worker_built.info
+
+# build a container with the composer from full source
+.PHONY: container_composer
+container_composer: container_composer_built.info
