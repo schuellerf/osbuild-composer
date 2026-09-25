@@ -119,6 +119,14 @@ go build -tags="integration${GOTAGS:+,$GOTAGS}" -ldflags="${TEST_LDFLAGS}" -o _b
 
 %endif
 
+%if 0%{?rhel}
+# golang-1.26.7-2 unpacks the GOFIPS140 snapshot mode 0555 under GOPATH/pkg/mod.
+# rpm rmbuild then fails: rm -rf of the build dir returns EACCES.
+if [ -d "$GO_BUILD_PATH/pkg/mod" ]; then
+  chmod -R u+w "$GO_BUILD_PATH/pkg/mod"
+fi
+%endif
+
 %install
 install -m 0755 -vd                                                %{buildroot}%{_libexecdir}/osbuild-composer
 install -m 0755 -vp _bin/osbuild-composer                          %{buildroot}%{_libexecdir}/osbuild-composer/
